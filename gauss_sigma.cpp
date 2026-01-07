@@ -36,8 +36,10 @@
 #include <limits.h>
 #include <assert.h>
 #include <omp.h>
-#include <gmp.h>
 #include <signal.h>
+
+#include <vector>
+
 #define UWtype unsigned long
 #define UDItype unsigned long
 #define W_TYPE_SIZE 64
@@ -739,24 +741,22 @@ static void
 initPrimes (unsigned long B)
 {
   unsigned long i, j, p;
-  mpz_t T;
-  mpz_init (T); /* T[i] = 1 when i is not prime */
+  std::vector<bool> T(B); /* T[i] = 1 when i is not prime */
   for (i = 2; i * i < B; i++)
     {
-      if (mpz_tstbit (T, i) == 0)
+      if (!T[i])
         for (j = i * i; j < B; j += i)
-          mpz_setbit (T, j);
+          T[j] = true;
     }
   for (nprimes = 0, i = 2; i < B; i++)
-    if (mpz_tstbit (T, i) == 0)
+    if (!T[i])
       nprimes++;
   Primes = malloc ((nprimes + 1) * sizeof (unsigned long));
   for (j = 0, i = 2; i < B; i++)
-    if (mpz_tstbit (T, i) == 0)
+    if (!T[i])
       Primes[j++] = i;
   /* add a sentinel */
   Primes[nprimes] = B;
-  mpz_clear (T);
   assert (j == nprimes);
   printf ("found %lu primes <= %lu\n", nprimes, B-1);
   fflush (stdout);

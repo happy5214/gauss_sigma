@@ -1,6 +1,6 @@
 CC = g++
 FLAGS = -ftrapv -O3 -g -fpermissive
-LIBS = -lm -lgmp -fopenmp
+LIBS = -lm -fopenmp
 
 objs = gauss_sigma.o
 
