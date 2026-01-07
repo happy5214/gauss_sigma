@@ -38,10 +38,15 @@
 #include <omp.h>
 #include <gmp.h>
 #include <signal.h>
+
+#include "carg_parser.h"
+
 #define UWtype unsigned long
 #define UDItype unsigned long
 #define W_TYPE_SIZE 64
 #define ASSERT assert
+
+static const char * invocation_name = "gauss_sigma";	/* default value */
 
 /* known loops (will not be printed) */
 #if 1
@@ -1073,8 +1078,15 @@ find_y0 (long y0, long x, long mod, long *toggle)
   return y0;
 }
 
+static void
+internal_error (const char * const msg)
+{
+  fprintf (stderr, "%s: Internal error: %s\n", invocation_name, msg);
+  exit (3);
+}
+
 int
-main (int argc, char *argv[])
+main (const int argc, const char * const argv[])
 {
   unsigned long mod = 1;
   long xmin = LONG_MIN;
@@ -1082,44 +1094,66 @@ main (int argc, char *argv[])
   FILE *fp = NULL;
 
   /* parse options */
-  while (argc > 1 && argv[1][0] == '-')
+  const ap_Option options[] =
     {
-      if (strcmp (argv[1], "-mod") == 0)
-        {
-          mod = strtoul (argv[2], NULL, 10);
-          printf ("using mod=%lu\n", mod);
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (argv[1], "-xmin") == 0)
-        {
-          xmin = strtol (argv[2], NULL, 10);
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (argv[1], "-xmax") == 0)
-        {
-          xmax = strtol (argv[2], NULL, 10);
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (argv[1], "-save") == 0)
-        {
-          fp = fopen (argv[2], "w");
-          argv += 2;
-          argc -= 2;
-        }
-      else
-        {
-          fprintf (stderr, "Error, unknown option %s\n", argv[1]);
-          exit (1);
-        }
+    /* code, long_name, has_arg (no/yes/maybe/yme) */
+    { 'm', "mod",  ap_yes },
+    { 'x', "xmin", ap_yes },
+    { 'X', "xmax", ap_yes },
+    { 's', "save", ap_yes },
+    { 0, 0,        ap_no  } };
+
+  Arg_parser parser;
+  int argind = 0;
+  if (argc > 0)
+    invocation_name = argv[0];
+
+  if (!ap_init (&parser, argc, argv, options, 0))
+    {
+      fputs ("Not enough memory.", stderr);
+      return 1;
     }
+  if (ap_error (&parser))
+    {
+      fputs (ap_error (&parser), stderr);
+      return 1;
+    }
+
+  for (; argind < ap_arguments (&parser); ++argind)
+    {
+    const int code = ap_code (&parser, argind);
+    if (!code)
+      break;					/* no more options */
+    const char * const arg = ap_argument (&parser, argind);
+    switch (code)
+      {
+      case 'm':
+        mod = strtoul (arg, NULL, 10);
+        printf ("using mod=%lu\n", mod);
+        break;
+      case 'x':
+        xmin = strtol (arg, NULL, 10);
+        break;
+      case 'X':
+        xmax = strtol (arg, NULL, 10);
+        break;
+      case 's':
+        fp = fopen (arg, "w");
+        break;
+      default:
+        internal_error ("uncaught option.");
+        return 1;
+      }
+    } /* end process options */
+
+  const char * const bound_arg = ap_argument (&parser, ++argind);
+  const unsigned long bound = strtoul (bound_arg, NULL, 10);
+
+  ap_free (&parser);
 
   signal (SIGINT, &signal_handler);
   signal (SIGTERM, &signal_handler);
 
-  unsigned long bound = strtoul (argv[1], NULL, 10);
   long xbound = (long) sqrt ((double) bound);
   xmin = (-xbound < xmin) ? xmin : -xbound;
   xmax = (xmax < xbound+1) ? xmax : xbound+1;

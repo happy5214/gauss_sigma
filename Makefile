@@ -2,7 +2,7 @@ CC = gcc
 FLAGS = -ftrapv -O3 -g
 LIBS = -lm -lgmp -fopenmp
 
-objs = gauss_sigma.o
+objs = gauss_sigma.o carg_parser.o
 
 .PHONY: all clean
 
