@@ -1,8 +1,8 @@
-CC = gcc
-FLAGS = -ftrapv -O3 -g
+CC = g++
+FLAGS = -ftrapv -O3 -g -fpermissive
 LIBS = -lm -lgmp -fopenmp
 
-objs = gauss_sigma.o
+objs = gauss_sigma.o arg_parser.o
 
 .PHONY: all clean
 
@@ -11,7 +11,7 @@ all: gauss_sigma
 gauss_sigma: $(objs)
 	$(CC) -o $@ $^ $(LIBS)
 
-%.o: %.c
+%.o: %.cpp
 	$(CC) -c -o $@ $< $(FLAGS)
 
 clean: 
