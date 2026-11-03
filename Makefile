@@ -2,7 +2,7 @@ CC = g++
 FLAGS = -ftrapv -O3 -g -fpermissive
 LIBS = -lm -lgmp -fopenmp
 
-objs = gauss_sigma.o
+objs = gauss_sigma.o arg_parser.o
 
 .PHONY: all clean
 

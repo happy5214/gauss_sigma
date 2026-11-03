@@ -38,10 +38,19 @@
 #include <omp.h>
 #include <gmp.h>
 #include <signal.h>
+
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "arg_parser.h"
+
 #define UWtype unsigned long
 #define UDItype unsigned long
 #define W_TYPE_SIZE 64
 #define ASSERT assert
+
+static std::string invocation_name = "gauss_sigma";
 
 /* known loops (will not be printed) */
 #if 1
@@ -1073,53 +1082,69 @@ find_y0 (long y0, long x, long mod, long *toggle)
   return y0;
 }
 
-int
-main (int argc, char *argv[])
-{
+static void internal_error(const std::string & msg) {
+  std::cerr << invocation_name << ": Internal error: " << msg << std::endl;
+  exit(3);
+}
+
+int main(const int argc, const char * const argv[]) {
   unsigned long mod = 1;
   long xmin = LONG_MIN;
   long xmax = LONG_MAX;
   FILE *fp = NULL;
 
-  /* parse options */
-  while (argc > 1 && argv[1][0] == '-')
-    {
-      if (strcmp (argv[1], "-mod") == 0)
-        {
-          mod = strtoul (argv[2], NULL, 10);
-          printf ("using mod=%lu\n", mod);
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (argv[1], "-xmin") == 0)
-        {
-          xmin = strtol (argv[2], NULL, 10);
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (argv[1], "-xmax") == 0)
-        {
-          xmax = strtol (argv[2], NULL, 10);
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (argv[1], "-save") == 0)
-        {
-          fp = fopen (argv[2], "w");
-          argv += 2;
-          argc -= 2;
-        }
-      else
-        {
-          fprintf (stderr, "Error, unknown option %s\n", argv[1]);
-          exit (1);
-        }
+  const Arg_parser::Option options[] = {
+    /* code, long_name, has_arg (no/yes/maybe/yme) */
+    { 'm', "mod",  Arg_parser::yes },
+    { 'x', "xmin", Arg_parser::yes },
+    { 'X', "xmax", Arg_parser::yes },
+    { 's', "save", Arg_parser::yes },
+    { 0, 0,        Arg_parser::no  }
+  };
+
+  if (argc > 0) {
+    invocation_name = argv[0];
+  } else {
+    return 1;
+  }
+
+  const Arg_parser parser(argc, argv, options);
+  if (parser.error().size()) {
+    std::cerr << "Argument error: " << parser.error() << std::endl;
+    return 1;
+  }
+
+  int argind = 0;
+
+  for (; argind < parser.arguments(); ++argind) {
+    const int code = parser.code(argind);
+    if (!code) break;				/* no more options */
+    const std::string arg = parser.argument(argind);
+    switch (code) {
+      case 'm':
+        mod = std::stoul(arg);
+        printf ("using mod=%lu\n", mod);
+        break;
+      case 'x':
+        xmin = std::stol(arg);
+        break;
+      case 'X':
+        xmax = std::stol(arg);
+        break;
+      case 's':
+        fp = fopen (arg.c_str(), "w");
+        break;
+      default:
+        internal_error("uncaught option.");
     }
+  }
+
+  const std::string bound_arg = parser.argument(argind);
+  const unsigned long bound = std::stoul(bound_arg);
 
   signal (SIGINT, &signal_handler);
   signal (SIGTERM, &signal_handler);
 
-  unsigned long bound = strtoul (argv[1], NULL, 10);
   long xbound = (long) sqrt ((double) bound);
   xmin = (-xbound < xmin) ? xmin : -xbound;
   xmax = (xmax < xbound+1) ? xmax : xbound+1;
