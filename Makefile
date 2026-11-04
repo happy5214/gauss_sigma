@@ -1,8 +1,8 @@
 CC = g++
-FLAGS = -ftrapv -O3 -g -fpermissive
-LIBS = -lm -lgmp -fopenmp
+FLAGS = -ftrapv -O3 -g -fpermissive -std=c++20
+LIBS = -lm -fopenmp
 
-objs = gauss_sigma.o arg_parser.o
+objs = gauss_sigma.o modular.o primes.o arg_parser.o
 
 .PHONY: all clean
 

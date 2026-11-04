@@ -1,20 +1,20 @@
 /* Copyright (C) 2019 Paul Zimmermann, LORIA/INRIA
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms of the GNU General Public License as published by the
-  Free Software Foundation; either version 2 of the License, or (at your
-  option) any later version.
-
-  This program is distributed in the hope that it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along
-  with this program; see the file COPYING.  If not, write to the Free
-  Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
-  02111-1307, USA.
-*/
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; see the file COPYING.  If not, write to the Free
+ * Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02111-1307, USA.
+ */
 
 /* compile with:
    gcc -ftrapv -O3 -g gauss_sigma.c -lm -lgmp -fopenmp
@@ -29,21 +29,24 @@
    [3] https://stackoverflow.com/questions/2269810/whats-a-nice-method-to-factor-gaussian-integers
 */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <limits.h>
-#include <assert.h>
-#include <omp.h>
-#include <gmp.h>
-#include <signal.h>
+#include <cassert>
+#include <climits>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include <signal.h>
+
+#include <omp.h>
+
 #include "arg_parser.h"
+#include "modular.h"
+#include "primes.h"
 
 #define UWtype unsigned long
 #define UDItype unsigned long
@@ -393,8 +396,8 @@ typedef struct {
   long y;
 } complex_t;
 
-unsigned long *Primes = NULL;
-unsigned long nprimes = 0;
+static std::vector<unsigned long> Primes;
+static std::size_t nprimes = 0;
 complex_t *Cprimes = NULL;
 
 typedef struct {
@@ -420,9 +423,8 @@ signal_handler (int sig)
   for (int i = 0; i < nthreads; i++)
     if (lastx[i] < last)
       last = lastx[i];
-  printf ("killed (completed up to %ld included)\n", last);
-  fflush (stdout);
-  exit (1);
+  std::cout << "killed (completed up to " << last << " included)" << std::endl;
+  std::exit(1);
 }
 
 static void
@@ -444,7 +446,7 @@ init_known (void)
           break;
         }
     }
-  printf ("found %lu value(s) in known table\n", known_size);
+  std::cout << "found " << known_size << " value(s) in known table" << std::endl;
   Known = malloc (known_size * sizeof (complex_t));
   for (i = 0; i < known_size; i++)
     {
@@ -544,131 +546,6 @@ try_divide (complex_t *z, long u, long v)
   return 1;
 }
 
-static unsigned long
-mulmod (unsigned long a, unsigned long b, unsigned long p)
-{
-  if (p <= 4294967295UL)
-    return (a * b) % p;
-  else
-    {
-      __uint128_t c = (__uint128_t) a * (__uint128_t) b;
-      return c % p;
-    }
-}
-
-int
-nbits (unsigned long p)
-{
-  int n = 0;
-  while (p)
-    {
-      n ++;
-      p = p >> 1;
-    }
-  return n;
-}
-
-/* return a^e mod p */
-static unsigned long
-powmod (unsigned long a, unsigned long e, unsigned long p)
-{
-  unsigned long r;
-  if (e == 0)
-    return 1;
-  int n = nbits (e) - 1;
-  r = a;
-  while (n--)
-    {
-      r = mulmod (r, r, p);
-      if ((e >> n) & 1)
-        r = mulmod (r, a, p);
-    }
-  return r;
-}
-
-/* https://en.wikipedia.org/wiki/Miller%E2%80%93Rabin_primality_test */
-static int
-miller_rabin (unsigned long n, unsigned long a)
-{
-  unsigned long d = n-1, s = 1;
-  while ((d % 2) == 0)
-    d = d / 2, s ++;
-  /* now n-1 = 2^s*d with d odd */
-  unsigned long b = powmod (a, d, n);
-  if (b == 1)
-    return 1; /* other powers will be 1 too */
-  if (b == n-1)
-    return 1;
-  for (unsigned long r = 1; r < s; r++)
-    {
-      b = mulmod (b, b, n);
-      if (b == n-1)
-        return 1;
-    }
-  return 0;
-}
-
-/* https://en.wikipedia.org/wiki/Miller%E2%80%93Rabin_primality_test */
-static int
-isprime (unsigned long n)
-{
-  if (n <= 2)
-    return n == 2;
-  if ((n % 2) == 0)
-    return 0;
-  /* now n is odd and n >= 3 */
-  if (n < 2047)
-    return miller_rabin (n, 2);
-  if (n < 9080191)
-    return miller_rabin (n, 31) && miller_rabin (n, 73);
-  if (n < 4759123141UL)
-    return miller_rabin (n, 2) && miller_rabin (n, 7) && miller_rabin (n, 61);
-  if (n < 1122004669633UL)
-    return miller_rabin (n, 2) && miller_rabin (n, 13) && miller_rabin (n, 23)
-      && miller_rabin (n, 1662803);
-  if (n < 2152302898747)
-    return miller_rabin (n, 2) && miller_rabin (n, 3) && miller_rabin (n, 5)
-      && miller_rabin (n, 7) && miller_rabin (n, 11);
-  if (n < 3474749660383)
-    return miller_rabin (n, 2) && miller_rabin (n, 3) && miller_rabin (n, 5)
-      && miller_rabin (n, 7) && miller_rabin (n, 11) && miller_rabin (n, 13);
-  if (n < 341550071728321)
-    return miller_rabin (n, 2) && miller_rabin (n, 3) && miller_rabin (n, 5)
-      && miller_rabin (n, 7) && miller_rabin (n, 11) && miller_rabin (n, 13)
-      && miller_rabin (n, 17);
-  if (n < 3825123056546413051)
-    return miller_rabin (n, 2) && miller_rabin (n, 3) && miller_rabin (n, 5)
-      && miller_rabin (n, 7) && miller_rabin (n, 11) && miller_rabin (n, 13)
-      && miller_rabin (n, 17) && miller_rabin (n, 19) && miller_rabin (n, 23);
-  fprintf (stderr, "Error, isprime not yet implemented for n >= 3825123056546413051\n");
-  exit (1);
-}
-
-static int
-isprime_slow (unsigned long n)
-{
-  if (n <= 2)
-    return n == 2;
-  for (unsigned long p = 2; p * p <= n; p++)
-    if ((n % p) == 0)
-      return 0;
-  return 1;
-}
-
-static void
-check_isprime (unsigned long bound)
-{
-#pragma omp parallel for schedule(dynamic,1)
-  for (unsigned long n = 0; n <= bound; n++)
-    if (isprime (n) != isprime_slow (n))
-      {
-        fprintf (stderr, "Error, isprime and isprime_slow disagree for n=%lu\n", n);
-        fprintf (stderr, "isprime returns %d\n", isprime (n));
-        fprintf (stderr, "isprime_slow returns %d\n", isprime_slow (n));
-        exit (1);
-      }
-}
-
 /* return k such that k^2 = -1 mod p for p = 1 mod 4:
    let n >= 2 such that n^((p-1)/2) = -1, then take k = n^((p-1)/4) */
 static unsigned long
@@ -683,8 +560,8 @@ square_root_of_minus_one (unsigned long p)
         return k;
     }
   /* we should never get there */
-  printf ("square_root_of_minus_one failed for p=%lu\n", p);
-  assert (0);
+  std::cerr << "square_root_of_minus_one failed for p=" << p << std::endl;
+  std::exit(3);
 }
 
 /* return round(a/b), assuming b > 0 */
@@ -747,31 +624,12 @@ find_divisor (long *x, long *y, long p, long k)
 static void
 initPrimes (unsigned long B)
 {
-  unsigned long i, j, p;
-  mpz_t T;
-  mpz_init (T); /* T[i] = 1 when i is not prime */
-  for (i = 2; i * i < B; i++)
-    {
-      if (mpz_tstbit (T, i) == 0)
-        for (j = i * i; j < B; j += i)
-          mpz_setbit (T, j);
-    }
-  for (nprimes = 0, i = 2; i < B; i++)
-    if (mpz_tstbit (T, i) == 0)
-      nprimes++;
-  Primes = malloc ((nprimes + 1) * sizeof (unsigned long));
-  for (j = 0, i = 2; i < B; i++)
-    if (mpz_tstbit (T, i) == 0)
-      Primes[j++] = i;
-  /* add a sentinel */
-  Primes[nprimes] = B;
-  mpz_clear (T);
-  assert (j == nprimes);
-  printf ("found %lu primes <= %lu\n", nprimes, B-1);
-  fflush (stdout);
+  Primes = sievePrimes(B);
+  nprimes = Primes.size();
+  std::cout << "found " << nprimes << " primes <= " << B - 1 << std::endl;
   Cprimes = malloc (nprimes * sizeof (complex_t));
 #pragma omp parallel for schedule(dynamic,1)
-  for (i = 0; i < nprimes; i++)
+  for (unsigned long i = 0; i < nprimes; i++)
     {
       unsigned long p = Primes[i];
       if ((p % 4) == 1)
@@ -787,8 +645,7 @@ initPrimes (unsigned long B)
           Cprimes[i].y = y;
         }
     }
-  printf ("finished computing complex primes\n");
-  fflush (stdout);
+  std::cout << "finished computing complex primes" << std::endl;
 }
 
 static void
@@ -884,7 +741,7 @@ factor (factor_t f, const complex_t z0)
   f->size = 0;
   unsigned long n = get_norm (z);
   unsigned long p;
-  if (isprime (n))
+  if (isPrime (n))
     goto last_factor;
   for (unsigned long i = 0; i < nprimes; i++)
     {
@@ -894,7 +751,7 @@ factor (factor_t f, const complex_t z0)
       if ((n % p) == 0)
         {
           factor_aux (f, &z, &n, p, i);
-          if (isprime (n))
+          if (isPrime (n))
             break;
         }
     }
@@ -922,7 +779,9 @@ sigma (complex_t z)
   complex_t z1;
   factor_init (f);
   factor (f, z);
-  // factor_print (f);
+#if DEBUG
+  factor_print (f);
+#endif
   z1.x = 1;
   z1.y = 0;
   for (int i = 0; i < f->size; i++)
@@ -996,8 +855,10 @@ find_cycle (complex_t z, unsigned long bound, unsigned long mod)
                 if (ok)
                   {
                     ffff = fopen ("gauss_sigma_C_file_cycles", "a");
-                    if (ffff == NULL)
-                       printf("Impossible d'ouvrir le fichier en écriture !");
+                    if (ffff == NULL) {
+                      std::cerr << "Could not open file for writing!" << std::endl;
+                      std::exit(2);
+                    }
                     else
                        {
                        fprintf (ffff, "loop (%ld,%ld) %d from (%ld,%ld)\n",
@@ -1123,7 +984,7 @@ int main(const int argc, const char * const argv[]) {
     switch (code) {
       case 'm':
         mod = std::stoul(arg);
-        printf ("using mod=%lu\n", mod);
+        std::cout << "using mod=" << mod << std::endl;
         break;
       case 'x':
         xmin = std::stol(arg);
@@ -1148,8 +1009,7 @@ int main(const int argc, const char * const argv[]) {
   long xbound = (long) sqrt ((double) bound);
   xmin = (-xbound < xmin) ? xmin : -xbound;
   xmax = (xmax < xbound+1) ? xmax : xbound+1;
-  printf ("xbound=%lu xmin=%ld xmax=%ld\n", xbound, xmin, xmax);
-  fflush (stdout);
+  std::cout << "xbound=" << xbound << " xmin=" << xmin << " xmax=" << xmax << std::endl;
 
   int nthreads = omp_get_max_threads ();
   lastx = malloc (nthreads * sizeof (long));
@@ -1158,13 +1018,19 @@ int main(const int argc, const char * const argv[]) {
   long old_last = xmin - 1;
 
   assert (sizeof (unsigned long) == 8); /* only works for 64-bit word */
-  //  check_isprime (bound);
+
+#if DEBUG
+  checkIsPrime(bound);
+#endif
+
   init_known ();
   initPrimes (xbound + 1);
 #pragma omp parallel for schedule(dynamic,1)
   for (long x = xmin; x < xmax; x++)
     {
-      // printf ("starting x=%ld\n", x);
+#if DEBUG
+      std::cout << "starting x=" << x << std::endl;
+#endif
       /* we want x^2 + y^2 <= bound */
       long ymax = (long) sqrt ((double) (bound - x * x)), y0;
       unsigned long t = 0;
@@ -1173,11 +1039,15 @@ int main(const int argc, const char * const argv[]) {
         y0 = -ymax;
       else /* mod > 1 */
         {
-          assert (isprime (mod));
+          assert (isPrime (mod));
           y0 = find_y0 (-ymax, x, mod, toggle);
-          // printf ("mod=%ld x=%ld -ymax=%ld y0=%ld toggle[0]=%ld toggle[1]=%ld\n", mod, x, -ymax, y0, toggle[0], toggle[1]);
+#if DEBUG
+          printf ("mod=%ld x=%ld -ymax=%ld y0=%ld toggle[0]=%ld toggle[1]=%ld\n", mod, x, -ymax, y0, toggle[0], toggle[1]);
+#endif
         }
-      // printf ("y0=%ld ymax=%ld\n", y0, ymax);
+#if DEBUG
+      printf ("y0=%ld ymax=%ld\n", y0, ymax);
+#endif
       for (long y = y0; y <= ymax; y += toggle[t&1], t++)
         {
           complex_t z;
@@ -1202,8 +1072,10 @@ int main(const int argc, const char * const argv[]) {
     if (x%100==0)
        {
        fff = fopen ("gauss_sigma_C_file_x", "a");
-       if (fff == NULL)
-          printf("Impossible d'ouvrir le fichier en écriture !");
+       if (fff == NULL) {
+          std::cerr << "Could not open file for writing!" << std::endl;
+          return 2;
+       }
        else
        {
         fprintf (fff, "%ld\n", x);
@@ -1211,12 +1083,12 @@ int main(const int argc, const char * const argv[]) {
         };
        }
     if (x%1000==0)
-       {printf("x=%ld\n",x);};
+      {
+      std::cout << "x=" << x << "\n";
+      }
     }
-  printf ("completed xmin=%ld xmax=%ld\n", xmin, xmax);
-  fflush (stdout);
+  std::cout << "completed xmin=" << xmin << " xmax=" << xmax << std::endl;
   free (Known);
-  free (Primes);
   free (Cprimes);
   free (lastx);
   if (fp != NULL)
