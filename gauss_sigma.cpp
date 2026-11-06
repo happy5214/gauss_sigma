@@ -32,10 +32,10 @@
 #include <cassert>
 #include <climits>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -396,6 +396,11 @@ typedef struct {
   long y;
 } complex_t;
 
+std::ostream& operator<<(std::ostream& out, complex_t z) {
+    out << "(" << z.x << "," << z.y << ")";
+    return out;
+}
+
 static std::vector<unsigned long> Primes;
 static std::size_t nprimes = 0;
 complex_t *Cprimes = NULL;
@@ -407,9 +412,6 @@ typedef struct {
   int *e;
 } factor_struct;
 typedef factor_struct factor_t[1];
-
-FILE *ffff = NULL;
-FILE *fff = NULL;
 
 complex_t *Known = NULL;
 unsigned long known_size = 0;
@@ -436,9 +438,9 @@ init_known (void)
       for (j = 0; j < i; j++)
         if (known[j][0] == known[i][0] && known[j][1] == known[i][1])
           {
-            fprintf (stderr, "Error, duplicate known entry (%ld,%ld)\n",
-                     known[j][0], known[j][1]);
-            exit (1);
+            complex_t duplicate = {known[j][0], known[j][1]};
+            std::cerr << "Error, duplicate known entry " << duplicate << std::endl;
+            std::exit(3);
           }
       if (known[i][0] == 0 && known[i][1] == 0)
         {
@@ -480,13 +482,14 @@ factor_add (factor_t f, long x, long y)
   f->size++;
 }
 
-static void
-factor_print (factor_t f)
-{
-  for (int i = 0; i < f->size; i++)
-    printf ("(%ld,%ld)^%d ", f->z[i].x, f->z[i].y, f->e[i]);
-  printf ("\n");
+#if DEBUG
+static void factor_print(factor_t f) {
+  for (int i = 0; i < f->size; i++) {
+    std::cout << f->z[i] << '^' << f->e[i] << ' ';
+  }
+  std::cout << std::endl;
 }
+#endif
 
 static void
 factor_clear (factor_t f)
@@ -648,12 +651,6 @@ initPrimes (unsigned long B)
   std::cout << "finished computing complex primes" << std::endl;
 }
 
-static void
-print_complex (complex_t z)
-{
-  printf ("(%ld,%ld)\n", z.x, z.y);
-}
-
 /* Assuming p divides n, look for all prime divisors of norm p.
    Assumes p < 2^32. */
 static void
@@ -703,7 +700,9 @@ factor_aux (factor_t f, complex_t *z, unsigned long *n, unsigned long p,
   /* either x+I*y divides z, or its conjugate,
      in fact both can divide, as shown for
      -40-5*I = (-1) * (-I - 2) * (2*I + 1)^2 * (2*I + 3) */
-  // printf ("p=%lu k=%lu x=%ld y=%ld z=(%ld,%ld)\n", p, k, x, y, z,x, z.y);
+#if DEBUG
+  std::cout << "p=" << p << " k=" << k << " x=" << x << " y=" << y << " z=" << z << std::endl;
+#endif
   /* we always have *n divisible by p here */
   /* here x^2+y^2 = p, and p < sqrt(bound) */
   if (try_divide (z, x, y))
@@ -854,20 +853,17 @@ find_cycle (complex_t z, unsigned long bound, unsigned long mod)
                     ok = 0;
                 if (ok)
                   {
-                    ffff = fopen ("gauss_sigma_C_file_cycles", "a");
-                    if (ffff == NULL) {
+                    std::ofstream cycle_file("gauss_sigma_C_file_cycles", std::ios::out | std::ios::app);
+                    if (!cycle_file) {
                       std::cerr << "Could not open file for writing!" << std::endl;
                       std::exit(2);
                     }
                     else
-                       {
-                       fprintf (ffff, "loop (%ld,%ld) %d from (%ld,%ld)\n",
-                            l[j].x, l[j].y, k, z.x, z.y);
-                       fclose (ffff);
-                       };
-                    printf ("loop (%ld,%ld) %d from (%ld,%ld)\n",
-                            l[j].x, l[j].y, k, z.x, z.y);
-                    fflush (stdout);
+                      {
+                        cycle_file << "loop " << l[j] << ' ' << k << " from " << z << std::endl;
+                        cycle_file.close();
+                      }
+                    std::cout << "loop " << l[j] << ' ' << k << " from " << z << std::endl;
                     /* add in Known to avoid duplicate reports */
                     known_size ++;
                     Known = realloc (Known, known_size * sizeof (complex_t));
@@ -952,7 +948,7 @@ int main(const int argc, const char * const argv[]) {
   unsigned long mod = 1;
   long xmin = LONG_MIN;
   long xmax = LONG_MAX;
-  FILE *fp = NULL;
+  std::ofstream save_file;
 
   const Arg_parser::Option options[] = {
     /* code, long_name, has_arg (no/yes/maybe/yme) */
@@ -993,7 +989,11 @@ int main(const int argc, const char * const argv[]) {
         xmax = std::stol(arg);
         break;
       case 's':
-        fp = fopen (arg.c_str(), "w");
+        save_file.open(arg, std::ios::out);
+        if (!save_file) {
+          std::cerr << "Could not open file for writing!" << std::endl;
+          return 2;
+        }
         break;
       default:
         internal_error("uncaught option.");
@@ -1042,11 +1042,11 @@ int main(const int argc, const char * const argv[]) {
           assert (isPrime (mod));
           y0 = find_y0 (-ymax, x, mod, toggle);
 #if DEBUG
-          printf ("mod=%ld x=%ld -ymax=%ld y0=%ld toggle[0]=%ld toggle[1]=%ld\n", mod, x, -ymax, y0, toggle[0], toggle[1]);
+          std::cout << "mod=" << mod << " x=" << x << " -ymax=" << -ymax << " y0=" << y0 << " toggle[0]=" << toggle[0] << " toggle[1]=" << toggle[1] << std::endl;
 #endif
         }
 #if DEBUG
-      printf ("y0=%ld ymax=%ld\n", y0, ymax);
+      std::cout << "y0=" << y0 << " ymax=" << ymax << std::endl;
 #endif
       for (long y = y0; y <= ymax; y += toggle[t&1], t++)
         {
@@ -1057,7 +1057,7 @@ int main(const int argc, const char * const argv[]) {
         }
       lastx[omp_get_thread_num ()] = x;
 #pragma omp critical
-      if (fp != NULL)
+      if (save_file)
         {
           long last = LONG_MAX;
           for (int i = 0; i < nthreads; i++)
@@ -1065,23 +1065,23 @@ int main(const int argc, const char * const argv[]) {
               last = lastx[i];
           if (last > old_last)
             {
-              fprintf (fp, "%ld\n", old_last = last);
-              fflush (fp);
+              old_last = last;
+              save_file << last << std::endl;
             }
         }
     if (x%100==0)
-       {
-       fff = fopen ("gauss_sigma_C_file_x", "a");
-       if (fff == NULL) {
-          std::cerr << "Could not open file for writing!" << std::endl;
-          return 2;
-       }
-       else
-       {
-        fprintf (fff, "%ld\n", x);
-        fclose (fff);
-        };
-       }
+      {
+        std::ofstream x_file("gauss_sigma_C_file_x", std::ios::out | std::ios::app);
+        if (!x_file) {
+            std::cerr << "Could not open file for writing!" << std::endl;
+            return 2;
+        }
+        else
+        {
+          x_file << x << std::endl;
+          x_file.close();
+        }
+      }
     if (x%1000==0)
       {
       std::cout << "x=" << x << "\n";
@@ -1091,7 +1091,8 @@ int main(const int argc, const char * const argv[]) {
   free (Known);
   free (Cprimes);
   free (lastx);
-  if (fp != NULL)
-    fclose (fp);
+  if (save_file) {
+    save_file.close();
+  }
   return 0;
 }
