@@ -35,9 +35,11 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <signal.h>
@@ -396,41 +398,31 @@ typedef struct {
   long y;
 } complex_t;
 
-std::ostream& operator<<(std::ostream& out, complex_t z) {
+std::ostream& operator<<(std::ostream& out, const complex_t z) {
     out << "(" << z.x << "," << z.y << ")";
     return out;
 }
 
 static std::vector<unsigned long> Primes;
-static std::size_t nprimes = 0;
-complex_t *Cprimes = NULL;
+static std::vector<complex_t> Cprimes;
 
-typedef struct {
-  int size;
-  int alloc;
-  complex_t *z;
-  int *e;
-} factor_struct;
-typedef factor_struct factor_t[1];
+typedef std::pair<complex_t, int> Factor;
+typedef std::vector<Factor> factor_t;
 
 complex_t *Known = NULL;
 unsigned long known_size = 0;
-long *lastx;
+static std::vector<long> lastx;
 
-static void
-signal_handler (int sig)
+static void signal_handler (int sig)
 {
-  int nthreads = omp_get_max_threads ();
-  long last = LONG_MAX;
-  for (int i = 0; i < nthreads; i++)
-    if (lastx[i] < last)
-      last = lastx[i];
+  const int nthreads = omp_get_max_threads();
+  std::vector<long>::iterator result = std::min_element(lastx.begin(), lastx.end());
+  const long last = *result;
   std::cout << "killed (completed up to " << last << " included)" << std::endl;
   std::exit(1);
 }
 
-static void
-init_known (void)
+static void init_known()
 {
   int i, j;
   for (i = 0;; i++)
@@ -438,7 +430,7 @@ init_known (void)
       for (j = 0; j < i; j++)
         if (known[j][0] == known[i][0] && known[j][1] == known[i][1])
           {
-            complex_t duplicate = {known[j][0], known[j][1]};
+            const complex_t duplicate = {known[j][0], known[j][1]};
             std::cerr << "Error, duplicate known entry " << duplicate << std::endl;
             std::exit(3);
           }
@@ -449,7 +441,7 @@ init_known (void)
         }
     }
   std::cout << "found " << known_size << " value(s) in known table" << std::endl;
-  Known = malloc (known_size * sizeof (complex_t));
+  Known = (complex_t *) malloc(known_size * sizeof (complex_t));
   for (i = 0; i < known_size; i++)
     {
       Known[i].x = known[i][0];
@@ -457,50 +449,27 @@ init_known (void)
     }
 }
 
-static void
-factor_init (factor_t f)
-{
-  f->alloc = f->size = 0;
-  f->z = NULL;
-  f->e = NULL;
-}
-
 /* we should have x > 0 and y >= 0 */
-static void
-factor_add (factor_t f, long x, long y)
+static Factor factor_add(factor_t & f, const long x, const long y)
 {
-  assert (x > 0 && y >= 0);
-  if (f->size + 1 > f->alloc)
-    {
-      f->alloc += 1 + f->alloc / 2;
-      f->z = realloc (f->z, f->alloc * sizeof (complex_t));
-      f->e = realloc (f->e, f->alloc * sizeof (int));
-    }
-  f->z[f->size].x = x;
-  f->z[f->size].y = y;
-  f->e[f->size] = 1;
-  f->size++;
+  assert(x > 0 && y >= 0);
+  const complex_t z = {x, y};
+  const Factor newF = std::make_pair(z, 1);
+  f.push_back(newF);
+  return newF;
 }
 
 #if DEBUG
-static void factor_print(factor_t f) {
-  for (int i = 0; i < f->size; i++) {
-    std::cout << f->z[i] << '^' << f->e[i] << ' ';
+static void factor_print(const factor_t & f) {
+  for (const auto [z, e] : f) {
+    std::cout << z << '^' << e << ' ';
   }
   std::cout << std::endl;
 }
 #endif
 
-static void
-factor_clear (factor_t f)
-{
-  free (f->z);
-  free (f->e);
-}
-
 /* return non-zero if norm(z) <= bound */
-int
-norm_fits_p (complex_t z, unsigned long bound)
+static int norm_fits_p(const complex_t z, const unsigned long bound)
 {
   /* first check if the norm fits an unsigned long */
   unsigned long x = (z.x >= 0) ? z.x : -z.x;
@@ -510,15 +479,14 @@ norm_fits_p (complex_t z, unsigned long bound)
   /* now x, y < 2^32 thus x^2+y^2 < 2^65 */
   x = x * x;
   y = y * y;
-  unsigned long n = x + y;
+  const unsigned long n = x + y;
   if (n < x)
     return 0; /* does not fit an unsigned long */
   return n <= bound;
 }
 
 /* return norm(z), assuming norm(z) <= bound */
-unsigned long
-get_norm (complex_t z)
+static unsigned long get_norm(const complex_t z)
 {
   return (unsigned long) z.x * (unsigned long) z.x
     + (unsigned long) z.y * (unsigned long) z.y;
@@ -529,37 +497,35 @@ get_norm (complex_t z)
    If so, divides z by u+iv.
    We always have p = u^2+v^2 <= sqrt(norm(z)) <= bound.
    No overflow can occur. */
-int
-try_divide (complex_t *z, long u, long v)
+static bool try_divide(complex_t & z, const long u, const long v)
 {
   if (u == 0 && v == 0)
-    return 0;
-  assert (u != 0); /* if v*i divides z, also does v, which we prefer */
-  long n = u * u + v * v; /* no overflow since u^2+v^2 = p < 2^32 */
+    return false;
+  assert(u != 0); /* if v*i divides z, also does v, which we prefer */
+  const long n = u * u + v * v; /* no overflow since u^2+v^2 = p < 2^32 */
   /* we have |x| <= 2*sqrt(norm(z))*sqrt(p) <= 2*bound^(3/4) < 2^63
      since bound < 2^64 */
-  long x = z->x * u + z->y * v;
+  const long x = z.x * u + z.y * v;
   if ((x % n) != 0)
-    return 0;
-  long y = z->x * (-v) + z->y * u; /* same bound for |y| */
+    return false;
+  const long y = z.x * (-v) + z.y * u; /* same bound for |y| */
   if ((y % n) != 0)
-    return 0;
-  z->x = x / n;
-  z->y = y / n;
-  return 1;
+    return false;
+  z.x = x / n;
+  z.y = y / n;
+  return true;
 }
 
 /* return k such that k^2 = -1 mod p for p = 1 mod 4:
    let n >= 2 such that n^((p-1)/2) = -1, then take k = n^((p-1)/4) */
-static unsigned long
-square_root_of_minus_one (unsigned long p)
+static unsigned long square_root_of_minus_one(const unsigned long p)
 {
   unsigned long n, k;
-  assert ((p % 4) == 1);
+  assert((p % 4) == 1);
   for (n = 2; n < p; n++)
     {
-      k = powmod (n, (p - 1) / 4, p);
-      if (mulmod (k, k, p) == p - 1)
+      k = powmod(n, (p - 1) / 4, p);
+      if (mulmod(k, k, p) == p - 1)
         return k;
     }
   /* we should never get there */
@@ -568,12 +534,11 @@ square_root_of_minus_one (unsigned long p)
 }
 
 /* return round(a/b), assuming b > 0 */
-long
-div_round (long a, long b)
+static long div_round(const long a, const long b)
 {
-  assert (b > 0);
-  long q = a / b;
-  long r = a - q * b;
+  assert(b > 0);
+  const long q = a / b;
+  const long r = a - q * b;
   if (2 * r > b) /* r > b/2 */
     return q + 1;
   else if (2 * r < -b) /* r < -b/2 */
@@ -585,8 +550,7 @@ div_round (long a, long b)
 /* Return x+I*y = unit * gcd(p, k+I) over the Gaussian integers
    with x+I*y in the first quadrant, thus ax > 0 and ay >= 0.
    Assumes p < 2^32 and 0 < k < p. */
-static void
-find_divisor (long *x, long *y, long p, long k)
+static void find_divisor(long *x, long *y, const long p, const long k)
 {
   long ax = p, ay = 0, bx = k, by = 1, cx, cy, qx, qy, nb;
   while (bx != 0 || by != 0)
@@ -614,7 +578,7 @@ find_divisor (long *x, long *y, long p, long k)
     ay = -ay; /* complex conjugate */
   if (ax == 0)
     {
-      assert (ay > 0);
+      assert(ay > 0);
       /* return -I*z */
       ax = ay;
       ay = 0;
@@ -624,26 +588,25 @@ find_divisor (long *x, long *y, long p, long k)
 }
 
 /* initializes all primes < B */
-static void
-initPrimes (unsigned long B)
+static void initPrimes(const unsigned long B)
 {
   Primes = sievePrimes(B);
-  nprimes = Primes.size();
+  const auto nprimes = Primes.size();
   std::cout << "found " << nprimes << " primes <= " << B - 1 << std::endl;
-  Cprimes = malloc (nprimes * sizeof (complex_t));
+  Cprimes.reserve(nprimes);
 #pragma omp parallel for schedule(dynamic,1)
   for (unsigned long i = 0; i < nprimes; i++)
     {
-      unsigned long p = Primes[i];
+      const unsigned long p = Primes[i];
       if ((p % 4) == 1)
         {
           /* case p = 1 mod 4:
              (1) first find k such that k^2 = 1 mod p
              (2) then compute the gcd of p and k+I */
-          unsigned long k = square_root_of_minus_one (p);
+          const unsigned long k = square_root_of_minus_one(p);
           long x, y;
-          find_divisor (&x, &y, p, k);
-          assert (x > 0 && y >= 0);
+          find_divisor(&x, &y, p, k);
+          assert(x > 0 && y >= 0);
           Cprimes[i].x = x;
           Cprimes[i].y = y;
         }
@@ -653,145 +616,137 @@ initPrimes (unsigned long B)
 
 /* Assuming p divides n, look for all prime divisors of norm p.
    Assumes p < 2^32. */
-static void
-factor_aux (factor_t f, complex_t *z, unsigned long *n, unsigned long p,
-            unsigned long idx)
+static unsigned long factor_aux(factor_t & f, complex_t & z, unsigned long norm,
+            const unsigned long p, const unsigned long idx)
 {
-  int ok;
+  bool ok;
   if (p == 2)
     {
       /* from [1] page 17 (step 3c): if e is the 2-valuation of n, then
          (1+k)^e divides z */
-      *n = *n / 2;
+      norm /= 2;
       factor_add (f, 1, 1);
-      ok = try_divide (z, 1, 1);
-      assert (ok);
-      while ((*n % 2) == 0)
+      ok = try_divide(z, 1, 1);
+      assert(ok);
+      while ((norm % 2) == 0)
         {
-          *n = *n / 2;
-          f->e[f->size-1] ++;
-          ok = try_divide (z, 1, 1);
-          assert (ok);
+          norm /= 2;
+          f.back().second++;
+          ok = try_divide(z, 1, 1);
+          assert(ok);
         }
-      return;
+      return norm;
     }
   else if ((p % 4) == 3)
     {
       /* if p = 4k+3, then (x,y) = (p,0) and the exponent should
          be even, see [1] top of page 17 */
-      assert ((*n % (p * p)) == 0);
-      *n = *n / (p * p);
+      assert((norm % (p * p)) == 0);
+      norm /= (p * p);
       factor_add (f, p, 0);
-      ok = try_divide (z, p, 0);
-      assert (ok);
-      while ((*n % (p * p)) == 0)
+      ok = try_divide(z, p, 0);
+      assert(ok);
+      while ((norm % (p * p)) == 0)
         {
-          *n = *n / (p * p);
-          f->e[f->size-1] ++;
-          ok = try_divide (z, p, 0);
-          assert (ok);
+          norm /= (p * p);
+          f.back().second++;
+          ok = try_divide(z, p, 0);
+          assert(ok);
         }
-      return;
+      return norm;
     }
-  assert ((p % 4) == 1);
+  assert((p % 4) == 1);
   /* we use precomputed values of x,y, with x > 0 and y >= 0 */
-  long x = Cprimes[idx].x;
-  long y = Cprimes[idx].y;
+  const long x = Cprimes[idx].x;
+  const long y = Cprimes[idx].y;
   /* either x+I*y divides z, or its conjugate,
      in fact both can divide, as shown for
      -40-5*I = (-1) * (-I - 2) * (2*I + 1)^2 * (2*I + 3) */
 #if DEBUG
   std::cout << "p=" << p << " k=" << k << " x=" << x << " y=" << y << " z=" << z << std::endl;
 #endif
-  /* we always have *n divisible by p here */
+  /* we always have norm divisible by p here */
   /* here x^2+y^2 = p, and p < sqrt(bound) */
-  if (try_divide (z, x, y))
+  if (try_divide(z, x, y))
     {
-      *n = *n / p;
+      norm /= p;
       factor_add (f, x, y);
-      while ((*n % p) == 0 && try_divide (z, x, y))
+      while ((norm % p) == 0 && try_divide(z, x, y))
         {
-          *n = *n / p;
-          f->e[f->size-1] ++;
+          norm /= p;
+          f.back().second++;
         }
     }
   /* now try with I*conj(z) = y+I*x */
-  if ((*n % p) == 0 && try_divide (z, y, x))
+  if ((norm % p) == 0 && try_divide(z, y, x))
     {
-      *n = *n / p;
+      norm /= p;
       factor_add (f, y, x);
-      while ((*n % p) == 0 && try_divide (z, y, x))
+      while ((norm % p) == 0 && try_divide(z, y, x))
         {
-          *n = *n / p;
-          f->e[f->size-1] ++;
+          norm /= p;
+          f.back().second++;
         }
     }
+  return norm;
 }
 
-#define TRACE_X -3160
-#define TRACE_Y -113
-
 /* assert z0 <> 0 */
-static void
-factor (factor_t f, const complex_t z0)
+static factor_t factor(const complex_t z0)
 {
-  assert (z0.x != 0 || z0.y != 0);
+  assert(z0.x != 0 || z0.y != 0);
+  factor_t f;
   complex_t z = z0;
-  f->size = 0;
-  unsigned long n = get_norm (z);
-  unsigned long p;
-  if (isPrime (n))
+  unsigned long norm = get_norm(z);
+  if (isPrime(norm))
     goto last_factor;
-  for (unsigned long i = 0; i < nprimes; i++)
+  for (unsigned long i = 0; i < Primes.size(); i++)
     {
-      p = Primes[i];
-      if (p * p > n)
+      unsigned long p = Primes[i];
+      if (p * p > norm)
         break;
-      if ((n % p) == 0)
+      if ((norm % p) == 0)
         {
-          factor_aux (f, &z, &n, p, i);
-          if (isPrime (n))
+          norm = factor_aux(f, z, norm, p, i);
+          if (isPrime(norm))
             break;
         }
     }
   /* if n > 1, then n is prime, thus the only divisor is z */
  last_factor :
-  if (n > 1)
+  if (norm > 1)
     {
       long x = z.x, y = z.y;
       if (x < 0)
         x = -x, y = -y;
       if (y < 0) /* change into -I*z */
-        { long t = x; x = -y; y = t; }
+        {
+          std::swap(x, y);
+          x = -x;
+        }
       if (x > 0)
         factor_add (f, x, y);
       else
         factor_add (f, y, 0);
     }
+  return f;
 }
 
 /* z1 <- sigma(z) */
-static complex_t
-sigma (complex_t z)
+static complex_t sigma (complex_t z)
 {
-  factor_t f;
   complex_t z1;
-  factor_init (f);
-  factor (f, z);
+  const factor_t f = factor(z);
 #if DEBUG
-  factor_print (f);
+  factor_print(f);
 #endif
   z1.x = 1;
   z1.y = 0;
-  for (int i = 0; i < f->size; i++)
+  for (auto [t, e] : f)
     {
-      complex_t t = f->z[i];
-      int e = f->e[i];
-      complex_t u;
+      complex_t u = {1, 0};
       long x;
       /* compute 1 + t + ... + t^e */
-      u.x = 1;
-      u.y = 0;
       while (e-- > 0)
         {
           /* u <- 1 + t*u */
@@ -804,36 +759,34 @@ sigma (complex_t z)
       z1.y = z1.x * u.y + z1.y * u.x;
       z1.x = x;
     }
-  factor_clear (f);
   /* subtract z */
   z1.x -= z.x;
   z1.y -= z.y;
   return z1;
 }
 
-static void
-find_cycle (complex_t z, unsigned long bound, unsigned long mod)
+static void find_cycle(const complex_t z, const unsigned long bound, const unsigned long mod)
 {
   complex_t *l = NULL;
   /* we avoid (0,0) and (1,0) */
   if (z.y == 0 && (z.x == 0 || z.x == 1))
     return;
-  if (!norm_fits_p (z, bound))
+  if (!norm_fits_p(z, bound))
     return;
-  unsigned long n0 = get_norm (z);
-  assert ((n0 % mod) == 0);
+  const unsigned long n0 = get_norm(z);
+  assert((n0 % mod) == 0);
   unsigned long alloc = 8;
-  l = malloc (alloc * sizeof (complex_t));
+  l = (complex_t *) malloc(alloc * sizeof (complex_t));
   l[0] = z;
   for (int i = 1;; i++)
     {
       if (i >= alloc)
         {
           alloc *= 2;
-          l = realloc (l, alloc * sizeof (complex_t));
+          l = (complex_t *) realloc(l, alloc * sizeof (complex_t));
         }
       /* we have norm(l[i-1]) <= bound here */
-      l[i] = sigma (l[i-1]);
+      l[i] = sigma(l[i-1]);
       /* we stop if the first element is not the "smallest" one
          for some order function C -> R, here we consider the initial
          element should have the largest x */
@@ -866,7 +819,7 @@ find_cycle (complex_t z, unsigned long bound, unsigned long mod)
                     std::cout << "loop " << l[j] << ' ' << k << " from " << z << std::endl;
                     /* add in Known to avoid duplicate reports */
                     known_size ++;
-                    Known = realloc (Known, known_size * sizeof (complex_t));
+                    Known = (complex_t *) realloc(Known, known_size * sizeof (complex_t));
                     Known[known_size-1].x = l[j].x;
                     Known[known_size-1].y = l[j].y;
                   }
@@ -879,11 +832,11 @@ find_cycle (complex_t z, unsigned long bound, unsigned long mod)
       if (l[i].x == 1 && l[i].y == 0)
         break;
       /* we also stop when norm(l[i]) does not fit an unsigned long */
-      if (!norm_fits_p (l[i], bound))
+      if (!norm_fits_p(l[i], bound))
         break;
     }
  end:
-  free (l);
+  free(l);
 }
 
 /* Return the smallest y >= y0 such that x^2 + y^2 is divisible by 'mod',
@@ -892,8 +845,7 @@ find_cycle (complex_t z, unsigned long bound, unsigned long mod)
    y0 + toggle[0] + toggle[1] + toggle[0], ...
    Return LONG_MAX if no such y exists.
    Assume 'mod' is prime. */
-static long
-find_y0 (long y0, long x, long mod, long *toggle)
+static long find_y0(long y0, const long x, const long mod, long * const toggle)
 {
   long s, t;
   if ((x % mod) == 0) /* it suffices to have y = 0 mod 'mod' */
@@ -901,7 +853,7 @@ find_y0 (long y0, long x, long mod, long *toggle)
       t = (-y0) % mod;
       if (t < 0)
         t = t + mod;
-      assert (0 <= t < mod);
+      assert(0 <= t < mod);
       y0 += t;
       toggle[0] = toggle[1] = mod;
       return y0;
@@ -920,8 +872,8 @@ find_y0 (long y0, long x, long mod, long *toggle)
      and there is a root of -1 mod m iff m = 1 mod 4 */
   if ((mod % 4) != 1)
     return LONG_MAX;
-  unsigned long r = square_root_of_minus_one (mod);
-  r = (x > 0) ? mulmod (r, x, mod) : mod - mulmod (r, -x, mod);
+  unsigned long r = square_root_of_minus_one(mod);
+  r = (x > 0) ? mulmod(r, x, mod) : mod - mulmod(r, -x, mod);
   /* let y = y0 + t = r mod 'mod', thus t = r - y0 mod 'mod' */
   t = (r - y0) % mod;
   if (t < 0)
@@ -1006,25 +958,23 @@ int main(const int argc, const char * const argv[]) {
   signal (SIGINT, &signal_handler);
   signal (SIGTERM, &signal_handler);
 
-  long xbound = (long) sqrt ((double) bound);
+  const long xbound = (long) sqrt ((double) bound);
   xmin = (-xbound < xmin) ? xmin : -xbound;
   xmax = (xmax < xbound+1) ? xmax : xbound+1;
   std::cout << "xbound=" << xbound << " xmin=" << xmin << " xmax=" << xmax << std::endl;
 
-  int nthreads = omp_get_max_threads ();
-  lastx = malloc (nthreads * sizeof (long));
-  for (int i = 0; i < nthreads; i++)
-    lastx[i] = xmin - 1;
+  const int nthreads = omp_get_max_threads();
+  lastx.assign(nthreads, xmin - 1);
   long old_last = xmin - 1;
 
-  assert (sizeof (unsigned long) == 8); /* only works for 64-bit word */
+  assert(sizeof (unsigned long) == 8); /* only works for 64-bit word */
 
 #if DEBUG
   checkIsPrime(bound);
 #endif
 
-  init_known ();
-  initPrimes (xbound + 1);
+  init_known();
+  initPrimes(xbound + 1);
 #pragma omp parallel for schedule(dynamic,1)
   for (long x = xmin; x < xmax; x++)
     {
@@ -1032,14 +982,15 @@ int main(const int argc, const char * const argv[]) {
       std::cout << "starting x=" << x << std::endl;
 #endif
       /* we want x^2 + y^2 <= bound */
-      long ymax = (long) sqrt ((double) (bound - x * x)), y0;
+      const long ymax = (long) sqrt((double) (bound - x * x));
+      long y0;
       unsigned long t = 0;
       long toggle[2] = {1,1};
       if (mod == 1)
         y0 = -ymax;
       else /* mod > 1 */
         {
-          assert (isPrime (mod));
+          assert(isPrime(mod));
           y0 = find_y0 (-ymax, x, mod, toggle);
 #if DEBUG
           std::cout << "mod=" << mod << " x=" << x << " -ymax=" << -ymax << " y0=" << y0 << " toggle[0]=" << toggle[0] << " toggle[1]=" << toggle[1] << std::endl;
@@ -1050,19 +1001,15 @@ int main(const int argc, const char * const argv[]) {
 #endif
       for (long y = y0; y <= ymax; y += toggle[t&1], t++)
         {
-          complex_t z;
-          z.x = x;
-          z.y = y;
-          find_cycle (z, bound, mod);
+          complex_t z = {x, y};
+          find_cycle(z, bound, mod);
         }
-      lastx[omp_get_thread_num ()] = x;
+      lastx[omp_get_thread_num()] = x;
 #pragma omp critical
       if (save_file)
         {
-          long last = LONG_MAX;
-          for (int i = 0; i < nthreads; i++)
-            if (lastx[i] < last)
-              last = lastx[i];
+          std::vector<long>::iterator result = std::min_element(lastx.begin(), lastx.end());
+          const long last = *result;
           if (last > old_last)
             {
               old_last = last;
@@ -1088,9 +1035,7 @@ int main(const int argc, const char * const argv[]) {
       }
     }
   std::cout << "completed xmin=" << xmin << " xmax=" << xmax << std::endl;
-  free (Known);
-  free (Cprimes);
-  free (lastx);
+  free(Known);
   if (save_file) {
     save_file.close();
   }

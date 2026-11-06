@@ -1,5 +1,5 @@
 CC = g++
-FLAGS = -ftrapv -O3 -g -fpermissive -std=c++20
+FLAGS = -O3 -std=c++20
 LIBS = -lm -fopenmp
 
 objs = gauss_sigma.o modular.o primes.o arg_parser.o
