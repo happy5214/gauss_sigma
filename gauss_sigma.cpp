@@ -1,4 +1,5 @@
 /* Copyright (C) 2019 Paul Zimmermann, LORIA/INRIA
+ * Copyright (C) 2026 Alexander Jones
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -47,6 +48,7 @@
 #include <omp.h>
 
 #include "arg_parser.h"
+#include "complex.h"
 #include "modular.h"
 #include "primes.h"
 
@@ -393,16 +395,6 @@ long known[][2] = {/* bound=10000000: */
 long known[][2] = {{0,0}};
 #endif
 
-typedef struct {
-  long x;
-  long y;
-} complex_t;
-
-std::ostream& operator<<(std::ostream& out, const complex_t z) {
-    out << "(" << z.x << "," << z.y << ")";
-    return out;
-}
-
 static std::vector<unsigned long> Primes;
 static std::vector<complex_t> Cprimes;
 
@@ -413,7 +405,7 @@ complex_t *Known = NULL;
 unsigned long known_size = 0;
 static std::vector<long> lastx;
 
-static void signal_handler (int sig)
+static void signal_handler(int sig)
 {
   const int nthreads = omp_get_max_threads();
   std::vector<long>::iterator result = std::min_element(lastx.begin(), lastx.end());
@@ -460,78 +452,20 @@ static Factor factor_add(factor_t & f, const long x, const long y)
 }
 
 #if DEBUG
-static void factor_print(const factor_t & f) {
-  for (const auto [z, e] : f) {
-    std::cout << z << '^' << e << ' ';
+std::ostream& operator<<(std::ostream& out, const Factor f) {
+  const auto [z, e] = f;
+  out << z << '^' << e;
+  return out;
+}
+
+std::ostream& operator<<(std::ostream& out, const factor_t factors) {
+  for (const auto f : factors) {
+    out << f << ' ';
   }
-  std::cout << std::endl;
+  out << '\n';
+  return out;
 }
 #endif
-
-/* return non-zero if norm(z) <= bound */
-static int norm_fits_p(const complex_t z, const unsigned long bound)
-{
-  /* first check if the norm fits an unsigned long */
-  unsigned long x = (z.x >= 0) ? z.x : -z.x;
-  unsigned long y = (z.y >= 0) ? z.y : -z.y;
-  if (x >= 4294967296UL || y >= 4294967296UL)
-    return 0;
-  /* now x, y < 2^32 thus x^2+y^2 < 2^65 */
-  x = x * x;
-  y = y * y;
-  const unsigned long n = x + y;
-  if (n < x)
-    return 0; /* does not fit an unsigned long */
-  return n <= bound;
-}
-
-/* return norm(z), assuming norm(z) <= bound */
-static unsigned long get_norm(const complex_t z)
-{
-  return (unsigned long) z.x * (unsigned long) z.x
-    + (unsigned long) z.y * (unsigned long) z.y;
-}
-
-/* Check whether u+iv divides z, i.e., of z * (u-iv)/(u^2+v^2) has
-   integer coefficients.
-   If so, divides z by u+iv.
-   We always have p = u^2+v^2 <= sqrt(norm(z)) <= bound.
-   No overflow can occur. */
-static bool try_divide(complex_t & z, const long u, const long v)
-{
-  if (u == 0 && v == 0)
-    return false;
-  assert(u != 0); /* if v*i divides z, also does v, which we prefer */
-  const long n = u * u + v * v; /* no overflow since u^2+v^2 = p < 2^32 */
-  /* we have |x| <= 2*sqrt(norm(z))*sqrt(p) <= 2*bound^(3/4) < 2^63
-     since bound < 2^64 */
-  const long x = z.x * u + z.y * v;
-  if ((x % n) != 0)
-    return false;
-  const long y = z.x * (-v) + z.y * u; /* same bound for |y| */
-  if ((y % n) != 0)
-    return false;
-  z.x = x / n;
-  z.y = y / n;
-  return true;
-}
-
-/* return k such that k^2 = -1 mod p for p = 1 mod 4:
-   let n >= 2 such that n^((p-1)/2) = -1, then take k = n^((p-1)/4) */
-static unsigned long square_root_of_minus_one(const unsigned long p)
-{
-  unsigned long n, k;
-  assert((p % 4) == 1);
-  for (n = 2; n < p; n++)
-    {
-      k = powmod(n, (p - 1) / 4, p);
-      if (mulmod(k, k, p) == p - 1)
-        return k;
-    }
-  /* we should never get there */
-  std::cerr << "square_root_of_minus_one failed for p=" << p << std::endl;
-  std::exit(3);
-}
 
 /* return round(a/b), assuming b > 0 */
 static long div_round(const long a, const long b)
@@ -550,7 +484,7 @@ static long div_round(const long a, const long b)
 /* Return x+I*y = unit * gcd(p, k+I) over the Gaussian integers
    with x+I*y in the first quadrant, thus ax > 0 and ay >= 0.
    Assumes p < 2^32 and 0 < k < p. */
-static void find_divisor(long *x, long *y, const long p, const long k)
+static complex_t find_divisor(const long p, const long k)
 {
   long ax = p, ay = 0, bx = k, by = 1, cx, cy, qx, qy, nb;
   while (bx != 0 || by != 0)
@@ -559,8 +493,8 @@ static void find_divisor(long *x, long *y, const long p, const long k)
       cx = ax * bx + ay * by;
       cy = - ax * by + ay * bx;
       nb = bx * bx + by * by;
-      qx = div_round (cx, nb);
-      qy = div_round (cy, nb);
+      qx = div_round(cx, nb);
+      qy = div_round(cy, nb);
       cx = qx * bx - qy * by;
       cy = qx * by + qy * bx;
       cx = ax - cx;
@@ -583,8 +517,8 @@ static void find_divisor(long *x, long *y, const long p, const long k)
       ax = ay;
       ay = 0;
     }
-  *x = ax;
-  *y = ay;
+  complex_t z = {ax, ay};
+  return z;
 }
 
 /* initializes all primes < B */
@@ -604,11 +538,9 @@ static void initPrimes(const unsigned long B)
              (1) first find k such that k^2 = 1 mod p
              (2) then compute the gcd of p and k+I */
           const unsigned long k = square_root_of_minus_one(p);
-          long x, y;
-          find_divisor(&x, &y, p, k);
-          assert(x > 0 && y >= 0);
-          Cprimes[i].x = x;
-          Cprimes[i].y = y;
+          const complex_t z = find_divisor(p, k);
+          assert(z.x > 0 && z.y >= 0);
+          Cprimes[i] = z;
         }
     }
   std::cout << "finished computing complex primes" << std::endl;
@@ -733,12 +665,12 @@ static factor_t factor(const complex_t z0)
 }
 
 /* z1 <- sigma(z) */
-static complex_t sigma (complex_t z)
+static complex_t sigma(complex_t z)
 {
   complex_t z1;
   const factor_t f = factor(z);
 #if DEBUG
-  factor_print(f);
+  std::cout << f << std::endl;
 #endif
   z1.x = 1;
   z1.y = 0;
@@ -955,8 +887,8 @@ int main(const int argc, const char * const argv[]) {
   const std::string bound_arg = parser.argument(argind);
   const unsigned long bound = std::stoul(bound_arg);
 
-  signal (SIGINT, &signal_handler);
-  signal (SIGTERM, &signal_handler);
+  signal(SIGINT, &signal_handler);
+  signal(SIGTERM, &signal_handler);
 
   const long xbound = (long) sqrt ((double) bound);
   xmin = (-xbound < xmin) ? xmin : -xbound;
@@ -991,7 +923,7 @@ int main(const int argc, const char * const argv[]) {
       else /* mod > 1 */
         {
           assert(isPrime(mod));
-          y0 = find_y0 (-ymax, x, mod, toggle);
+          y0 = find_y0(-ymax, x, mod, toggle);
 #if DEBUG
           std::cout << "mod=" << mod << " x=" << x << " -ymax=" << -ymax << " y0=" << y0 << " toggle[0]=" << toggle[0] << " toggle[1]=" << toggle[1] << std::endl;
 #endif
