@@ -27,10 +27,10 @@
 
 std::vector<unsigned long> sievePrimes(const unsigned long pMax) {
 	std::vector<unsigned long> primes;
-	std::vector<bool> numbers(pMax, true);
+	std::vector<bool> numbers(pMax - 2, true);
 
 	// Sieve
-	for (unsigned long i = 0; i < pMax - 1; i++) {
+	for (unsigned long i = 0; i < pMax - 3; i++) {
 		if (numbers[i]) {
 			for (unsigned long j = 2 * i + 2; j < pMax; j += (i + 2)) {
 				numbers[j] = false;

@@ -40,6 +40,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,7 @@
 
 #include "arg_parser.h"
 #include "complex.h"
+#include "factor.h"
 #include "modular.h"
 #include "primes.h"
 
@@ -60,7 +62,7 @@
 static std::string invocation_name = "gauss_sigma";
 
 /* known loops (will not be printed) */
-#if 1
+#if 0
 long known[][2] = {/* bound=10000000: */
                    {-2639,-1228},{-1105,1020},
                    /* bound=20000000: */
@@ -395,14 +397,6 @@ long known[][2] = {/* bound=10000000: */
 long known[][2] = {{0,0}};
 #endif
 
-static std::vector<unsigned long> Primes;
-static std::vector<complex_t> Cprimes;
-
-typedef std::pair<complex_t, int> Factor;
-typedef std::vector<Factor> factor_t;
-
-complex_t *Known = NULL;
-unsigned long known_size = 0;
 static std::vector<long> lastx;
 
 static void signal_handler(int sig)
@@ -414,361 +408,23 @@ static void signal_handler(int sig)
   std::exit(1);
 }
 
-static void init_known()
-{
-  int i, j;
-  for (i = 0;; i++)
-    {
-      for (j = 0; j < i; j++)
-        if (known[j][0] == known[i][0] && known[j][1] == known[i][1])
-          {
-            const complex_t duplicate = {known[j][0], known[j][1]};
-            std::cerr << "Error, duplicate known entry " << duplicate << std::endl;
-            std::exit(3);
-          }
-      if (known[i][0] == 0 && known[i][1] == 0)
-        {
-          known_size = i;
-          break;
-        }
-    }
-  std::cout << "found " << known_size << " value(s) in known table" << std::endl;
-  Known = (complex_t *) malloc(known_size * sizeof (complex_t));
-  for (i = 0; i < known_size; i++)
-    {
-      Known[i].x = known[i][0];
-      Known[i].y = known[i][1];
-    }
-}
-
-/* we should have x > 0 and y >= 0 */
-static Factor factor_add(factor_t & f, const long x, const long y)
-{
-  assert(x > 0 && y >= 0);
-  const complex_t z = {x, y};
-  const Factor newF = std::make_pair(z, 1);
-  f.push_back(newF);
-  return newF;
-}
-
-#if DEBUG
-std::ostream& operator<<(std::ostream& out, const Factor f) {
-  const auto [z, e] = f;
-  out << z << '^' << e;
-  return out;
-}
-
-std::ostream& operator<<(std::ostream& out, const factor_t factors) {
-  for (const auto f : factors) {
-    out << f << ' ';
-  }
-  out << '\n';
-  return out;
-}
-#endif
-
-/* return round(a/b), assuming b > 0 */
-static long div_round(const long a, const long b)
-{
-  assert(b > 0);
-  const long q = a / b;
-  const long r = a - q * b;
-  if (2 * r > b) /* r > b/2 */
-    return q + 1;
-  else if (2 * r < -b) /* r < -b/2 */
-    return q - 1;
-  else
-    return q;
-}
-
-/* Return x+I*y = unit * gcd(p, k+I) over the Gaussian integers
-   with x+I*y in the first quadrant, thus ax > 0 and ay >= 0.
-   Assumes p < 2^32 and 0 < k < p. */
-static complex_t find_divisor(const long p, const long k)
-{
-  long ax = p, ay = 0, bx = k, by = 1, cx, cy, qx, qy, nb;
-  while (bx != 0 || by != 0)
-    {
-      /* compute a/b = a*conj(b)/b^2 */
-      cx = ax * bx + ay * by;
-      cy = - ax * by + ay * bx;
-      nb = bx * bx + by * by;
-      qx = div_round(cx, nb);
-      qy = div_round(cy, nb);
-      cx = qx * bx - qy * by;
-      cy = qx * by + qy * bx;
-      cx = ax - cx;
-      cy = ay - cy;
-      ax = bx; ay = by;
-      bx = cx; by = cy;
-    }
-  if (ax < 0)
-    {
-      ax = -ax;
-      ay = -ay;
-    }
-  /* now ax >= 0 */
-  if (ay < 0)
-    ay = -ay; /* complex conjugate */
-  if (ax == 0)
-    {
-      assert(ay > 0);
-      /* return -I*z */
-      ax = ay;
-      ay = 0;
-    }
-  complex_t z = {ax, ay};
-  return z;
-}
-
-/* initializes all primes < B */
-static void initPrimes(const unsigned long B)
-{
-  Primes = sievePrimes(B);
-  const auto nprimes = Primes.size();
-  std::cout << "found " << nprimes << " primes <= " << B - 1 << std::endl;
-  Cprimes.reserve(nprimes);
-#pragma omp parallel for schedule(dynamic,1)
-  for (unsigned long i = 0; i < nprimes; i++)
-    {
-      const unsigned long p = Primes[i];
-      if ((p % 4) == 1)
-        {
-          /* case p = 1 mod 4:
-             (1) first find k such that k^2 = 1 mod p
-             (2) then compute the gcd of p and k+I */
-          const unsigned long k = square_root_of_minus_one(p);
-          const complex_t z = find_divisor(p, k);
-          assert(z.x > 0 && z.y >= 0);
-          Cprimes[i] = z;
-        }
-    }
-  std::cout << "finished computing complex primes" << std::endl;
-}
-
-/* Assuming p divides n, look for all prime divisors of norm p.
-   Assumes p < 2^32. */
-static unsigned long factor_aux(factor_t & f, complex_t & z, unsigned long norm,
-            const unsigned long p, const unsigned long idx)
-{
-  bool ok;
-  if (p == 2)
-    {
-      /* from [1] page 17 (step 3c): if e is the 2-valuation of n, then
-         (1+k)^e divides z */
-      norm /= 2;
-      factor_add (f, 1, 1);
-      ok = try_divide(z, 1, 1);
-      assert(ok);
-      while ((norm % 2) == 0)
-        {
-          norm /= 2;
-          f.back().second++;
-          ok = try_divide(z, 1, 1);
-          assert(ok);
-        }
-      return norm;
-    }
-  else if ((p % 4) == 3)
-    {
-      /* if p = 4k+3, then (x,y) = (p,0) and the exponent should
-         be even, see [1] top of page 17 */
-      assert((norm % (p * p)) == 0);
-      norm /= (p * p);
-      factor_add (f, p, 0);
-      ok = try_divide(z, p, 0);
-      assert(ok);
-      while ((norm % (p * p)) == 0)
-        {
-          norm /= (p * p);
-          f.back().second++;
-          ok = try_divide(z, p, 0);
-          assert(ok);
-        }
-      return norm;
-    }
-  assert((p % 4) == 1);
-  /* we use precomputed values of x,y, with x > 0 and y >= 0 */
-  const long x = Cprimes[idx].x;
-  const long y = Cprimes[idx].y;
-  /* either x+I*y divides z, or its conjugate,
-     in fact both can divide, as shown for
-     -40-5*I = (-1) * (-I - 2) * (2*I + 1)^2 * (2*I + 3) */
-#if DEBUG
-  std::cout << "p=" << p << " k=" << k << " x=" << x << " y=" << y << " z=" << z << std::endl;
-#endif
-  /* we always have norm divisible by p here */
-  /* here x^2+y^2 = p, and p < sqrt(bound) */
-  if (try_divide(z, x, y))
-    {
-      norm /= p;
-      factor_add (f, x, y);
-      while ((norm % p) == 0 && try_divide(z, x, y))
-        {
-          norm /= p;
-          f.back().second++;
-        }
-    }
-  /* now try with I*conj(z) = y+I*x */
-  if ((norm % p) == 0 && try_divide(z, y, x))
-    {
-      norm /= p;
-      factor_add (f, y, x);
-      while ((norm % p) == 0 && try_divide(z, y, x))
-        {
-          norm /= p;
-          f.back().second++;
-        }
-    }
-  return norm;
-}
-
-/* assert z0 <> 0 */
-static factor_t factor(const complex_t z0)
-{
-  assert(z0.x != 0 || z0.y != 0);
-  factor_t f;
-  complex_t z = z0;
-  unsigned long norm = get_norm(z);
-  if (isPrime(norm))
-    goto last_factor;
-  for (unsigned long i = 0; i < Primes.size(); i++)
-    {
-      unsigned long p = Primes[i];
-      if (p * p > norm)
-        break;
-      if ((norm % p) == 0)
-        {
-          norm = factor_aux(f, z, norm, p, i);
-          if (isPrime(norm))
-            break;
-        }
-    }
-  /* if n > 1, then n is prime, thus the only divisor is z */
- last_factor :
-  if (norm > 1)
-    {
-      long x = z.x, y = z.y;
-      if (x < 0)
-        x = -x, y = -y;
-      if (y < 0) /* change into -I*z */
-        {
-          std::swap(x, y);
-          x = -x;
-        }
-      if (x > 0)
-        factor_add (f, x, y);
-      else
-        factor_add (f, y, 0);
-    }
-  return f;
-}
-
-/* z1 <- sigma(z) */
-static complex_t sigma(complex_t z)
-{
-  complex_t z1;
-  const factor_t f = factor(z);
-#if DEBUG
-  std::cout << f << std::endl;
-#endif
-  z1.x = 1;
-  z1.y = 0;
-  for (auto [t, e] : f)
-    {
-      complex_t u = {1, 0};
-      long x;
-      /* compute 1 + t + ... + t^e */
-      while (e-- > 0)
-        {
-          /* u <- 1 + t*u */
-          x = u.x * t.x - u.y * t.y;
-          u.y = u.x * t.y + u.y * t.x;
-          u.x = 1 + x;
-        }
-      /* z1 <- z1 * u */
-      x = z1.x * u.x - z1.y * u.y;
-      z1.y = z1.x * u.y + z1.y * u.x;
-      z1.x = x;
-    }
-  /* subtract z */
-  z1.x -= z.x;
-  z1.y -= z.y;
-  return z1;
-}
-
-static void find_cycle(const complex_t z, const unsigned long bound, const unsigned long mod)
-{
-  complex_t *l = NULL;
-  /* we avoid (0,0) and (1,0) */
-  if (z.y == 0 && (z.x == 0 || z.x == 1))
-    return;
-  if (!norm_fits_p(z, bound))
-    return;
-  const unsigned long n0 = get_norm(z);
-  assert((n0 % mod) == 0);
-  unsigned long alloc = 8;
-  l = (complex_t *) malloc(alloc * sizeof (complex_t));
-  l[0] = z;
-  for (int i = 1;; i++)
-    {
-      if (i >= alloc)
-        {
-          alloc *= 2;
-          l = (complex_t *) realloc(l, alloc * sizeof (complex_t));
-        }
-      /* we have norm(l[i-1]) <= bound here */
-      l[i] = sigma(l[i-1]);
-      /* we stop if the first element is not the "smallest" one
-         for some order function C -> R, here we consider the initial
-         element should have the largest x */
-      if (l[i].x > z.x)
-        break;
-      /* check loop */
-      for (int j = i-1; j >= 0; j--)
-        if (l[j].x == l[i].x && l[j].y == l[i].y)
-          {
-            int k = i - j;
-            if (j < k || (j >= k && (l[j-k].x != l[j].x || l[j-k].y != l[j].y)))
-              {
-                /* check known loops */
-                int ok = 1;
-                for (int s = 0; s < known_size; s++)
-                  if (Known[s].x == l[j].x && Known[s].y == l[j].y)
-                    ok = 0;
-                if (ok)
-                  {
-                    std::ofstream cycle_file("gauss_sigma_C_file_cycles", std::ios::out | std::ios::app);
-                    if (!cycle_file) {
-                      std::cerr << "Could not open file for writing!" << std::endl;
-                      std::exit(2);
-                    }
-                    else
-                      {
-                        cycle_file << "loop " << l[j] << ' ' << k << " from " << z << std::endl;
-                        cycle_file.close();
-                      }
-                    std::cout << "loop " << l[j] << ' ' << k << " from " << z << std::endl;
-                    /* add in Known to avoid duplicate reports */
-                    known_size ++;
-                    Known = (complex_t *) realloc(Known, known_size * sizeof (complex_t));
-                    Known[known_size-1].x = l[j].x;
-                    Known[known_size-1].y = l[j].y;
-                  }
-              }
-            /* if a loop is found, we can exit, since no independent loop
-               can be found */
-            goto end;
-          }
-      /* we stop when reaching 1 */
-      if (l[i].x == 1 && l[i].y == 0)
-        break;
-      /* we also stop when norm(l[i]) does not fit an unsigned long */
-      if (!norm_fits_p(l[i], bound))
-        break;
-    }
- end:
-  free(l);
+static std::unordered_set<complex_t> init_known() {
+	std::unordered_set<complex_t> knownSet;
+	unsigned long known_size = 0;
+	int i, j;
+	for (i = 0;; i++) {
+		if (known[i][0] == 0 && known[i][1] == 0) {
+			break;
+		}
+		const complex_t z = {known[i][0], known[i][1]};
+		if (knownSet.contains(z)) {
+			std::cerr << "Error, duplicate known entry " << z << std::endl;
+			std::exit(3);
+		}
+		knownSet.insert(z);
+	}
+	std::cout << "found " << knownSet.size() << " value(s) in known table" << std::endl;
+	return knownSet;
 }
 
 /* Return the smallest y >= y0 such that x^2 + y^2 is divisible by 'mod',
@@ -864,6 +520,10 @@ int main(const int argc, const char * const argv[]) {
     switch (code) {
       case 'm':
         mod = std::stoul(arg);
+        if (mod > 1 && !isPrime(mod)) {
+          std::cerr << "Error: modulus is not prime." << std::endl;
+          return 1;
+        }
         std::cout << "using mod=" << mod << std::endl;
         break;
       case 'x':
@@ -891,22 +551,20 @@ int main(const int argc, const char * const argv[]) {
   signal(SIGTERM, &signal_handler);
 
   const long xbound = (long) sqrt ((double) bound);
-  xmin = (-xbound < xmin) ? xmin : -xbound;
-  xmax = (xmax < xbound+1) ? xmax : xbound+1;
+  xmin = std::max(xmin, -xbound);
+  xmax = std::min(xmax, xbound + 1);
   std::cout << "xbound=" << xbound << " xmin=" << xmin << " xmax=" << xmax << std::endl;
 
   const int nthreads = omp_get_max_threads();
   lastx.assign(nthreads, xmin - 1);
   long old_last = xmin - 1;
 
-  assert(sizeof (unsigned long) == 8); /* only works for 64-bit word */
-
 #if DEBUG
   checkIsPrime(bound);
 #endif
 
-  init_known();
-  initPrimes(xbound + 1);
+  std::unordered_set<complex_t> knownSet = init_known();
+  GaussianCycleFinder cycleFinder(xbound + 1, knownSet);
 #pragma omp parallel for schedule(dynamic,1)
   for (long x = xmin; x < xmax; x++)
     {
@@ -922,7 +580,6 @@ int main(const int argc, const char * const argv[]) {
         y0 = -ymax;
       else /* mod > 1 */
         {
-          assert(isPrime(mod));
           y0 = find_y0(-ymax, x, mod, toggle);
 #if DEBUG
           std::cout << "mod=" << mod << " x=" << x << " -ymax=" << -ymax << " y0=" << y0 << " toggle[0]=" << toggle[0] << " toggle[1]=" << toggle[1] << std::endl;
@@ -934,7 +591,7 @@ int main(const int argc, const char * const argv[]) {
       for (long y = y0; y <= ymax; y += toggle[t&1], t++)
         {
           complex_t z = {x, y};
-          find_cycle(z, bound, mod);
+          cycleFinder.find_cycle(z, bound, mod);
         }
       lastx[omp_get_thread_num()] = x;
 #pragma omp critical
@@ -967,7 +624,6 @@ int main(const int argc, const char * const argv[]) {
       }
     }
   std::cout << "completed xmin=" << xmin << " xmax=" << xmax << std::endl;
-  free(Known);
   if (save_file) {
     save_file.close();
   }

@@ -22,12 +22,21 @@
 
 #include <iostream>
 
-typedef struct {
+struct complex_t {
 	long x;
 	long y;
-} complex_t;
+
+	bool operator==(const complex_t& z) const;
+};
 
 std::ostream& operator<<(std::ostream& out, complex_t z);
+
+template<>
+struct std::hash<complex_t> {
+	std::size_t operator()(const complex_t& z) const noexcept {
+		return z.x + z.y;
+	}
+};
 
 /* return non-zero if norm(z) <= bound */
 bool norm_fits_p(complex_t z, unsigned long bound);

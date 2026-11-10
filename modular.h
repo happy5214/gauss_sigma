@@ -20,7 +20,7 @@
 #ifndef MODULAR_H
 #define MODULAR_H 1
 
-unsigned long mulmod (const unsigned long a, const unsigned long b, const unsigned long modulus);
+unsigned long mulmod(const unsigned long a, const unsigned long b, const unsigned long modulus);
 
 /* powmod = b^n mod m */
 unsigned long powmod(const unsigned long base, const unsigned long exponent, const unsigned long modulus);

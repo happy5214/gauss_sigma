@@ -26,6 +26,10 @@
 #include "complex.h"
 #include "modular.h"
 
+bool complex_t::operator==(const complex_t& z) const {
+	return x == z.x && y == z.y;
+}
+
 std::ostream& operator<<(std::ostream& out, const complex_t z) {
 	out << "(" << z.x << "," << z.y << ")";
 	return out;
@@ -63,6 +67,7 @@ bool norm_fits_p(const complex_t z, const unsigned long bound) {
 unsigned long get_norm(const complex_t z) {
 	return norm_real_imag(z.x, z.y);
 }
+
 
 /* Check whether u+iv divides z, i.e., of z * (u-iv)/(u^2+v^2) has
    integer coefficients.
